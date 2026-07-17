@@ -1,0 +1,31 @@
+# Vibe-Trading 金融投研引擎打包+发布配置模板（package-vibe-trading.sh）
+#
+# 用法：复制本文件为同目录 config.yaml（生产，默认）或 config-dev.yaml（本地/测试），填好下面几项后：
+#   scripts/package-vibe-trading.sh          # 默认读 config.yaml（生产）
+#   scripts/package-vibe-trading.sh --dev    # 读 config-dev.yaml（本地/测试环境）
+#
+# 格式：YAML 扁平 key: value，# 注释，安全逐行解析（脚本不 source、不引 YAML 库，不会执行里面命令）。
+# 优先级：命令行参数 > 环境变量 > 本配置文件 > 内置默认。
+# ⚠ config.yaml / config-dev.yaml 均已 .gitignore（含 admin_token 敏感），只有本 .example 进版本库。
+
+# 目标架构列表（逗号或空格分隔）。留空 = 当前 OS 默认全架构（mac=aarch64+x86_64；linux/win=本机架构）。
+# 跨 OS（linux/win）须在对应 OS 机器/容器上跑本脚本，各自发布，云端按 os-arch 累积进同一 manifest。
+targets: aarch64 x86_64
+
+# 引擎版本（多架构必须同版本）。留空则读仓根 pyproject.toml 的 version。
+version: ""
+
+# 云端 API 基址（给了即开启发布）。生产：https://api.huanxing.dcfuture.cn；本地 dev：http://127.0.0.1:8020
+publish_url: https://api.huanxing.dcfuture.cn
+
+# 云端 finance 应用目录行 ID（hasn_app_catalog 里 app_id='finance' 那行主键；生产/本地可能不同）
+app_pk: 0
+
+# 管理端 JWT。⚠ 敏感：复制后的 config.yaml 已 .gitignore，可直接填真实 token；
+# 亦可留空、改用环境变量注入：HASN_ADMIN_TOKEN=<jwt> scripts/package-vibe-trading.sh（环境变量覆盖本文件）。
+admin_token: ""
+
+# 以下可选（一般用默认即可）：
+# src: /abs/path/to/vibe-trading/agent   # 含 mcp_server.py，默认=引擎仓 agent/
+# out: /abs/path/to/out                  # 默认=<引擎仓根>/.engine-build/vibe-trading
+# base_url: https://cdn.example/vibe-trading  # 仅手工上传场景；--publish 时云端公共桶自动分配 URL
