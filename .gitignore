@@ -90,3 +90,8 @@ AGENTS.md
 # Alpha Zoo wiki artifacts (generated, not source)
 wiki/alpha-library/manifest.json
 wiki/alpha-library/content/
+
+# 唤星 fork：引擎打包产物与含敏感 token 的打包配置（scripts/package-vibe-trading.sh）
+.engine-build/
+scripts/config.yaml
+scripts/config-dev.yaml
