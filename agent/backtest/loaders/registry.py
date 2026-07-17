@@ -12,6 +12,10 @@ from __future__ import annotations
 import logging
 from typing import Any, Type
 
+from backtest.loaders._availability import (  # 唤星 fork 新增：链路可用性探针（R9）
+    format_unavailable_reasons,
+    probe_chain,
+)
 from backtest.loaders.base import NoAvailableSourceError
 
 logger = logging.getLogger(__name__)
@@ -172,9 +176,14 @@ def resolve_loader(market: str) -> Any:
             continue
         if loader.is_available():
             return loader
+    # 唤星 fork：整条链全灭是**终局故障**，原消息只列了名字、不说每个为什么不行，
+    # 等于让人从头再排查一遍。此处补上逐源原因。
+    # 只在失败路径付探测代价——happy path 上面已经 return 了，绝不重复实例化。
+    reasons = format_unavailable_reasons(probe_chain(market, FALLBACK_CHAINS, LOADER_REGISTRY))
     raise NoAvailableSourceError(
         f"No available data source for market '{market}'. "
-        f"Tried: {tried or chain}. Check network and API token config."
+        f"Tried: {tried or chain}. Check network and API token config.\n"
+        f"逐源不可用原因：\n{reasons}"
     )
 
 
