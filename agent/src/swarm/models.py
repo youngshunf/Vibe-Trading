@@ -120,6 +120,8 @@ class SwarmTask(BaseModel):
     started_at: str | None = None
     completed_at: str | None = None
     worker_iterations: int = 0
+    input_tokens: int = Field(default=0, ge=0)
+    output_tokens: int = Field(default=0, ge=0)
 
 
 class SwarmEvent(BaseModel):
@@ -191,6 +193,7 @@ class SwarmRun(BaseModel):
     provider: str | None = None
     model: str | None = None
     grounding_data: dict[str, list[dict]] | None = None
+    result_contract: str | None = None
 
 
 class WorkerResult(BaseModel):
