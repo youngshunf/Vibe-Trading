@@ -476,6 +476,23 @@ def verify_release_manifest(
     return dict(package)
 
 
+def verify_publish_response(
+    manifest: Mapping[str, Any],
+    response_envelope: Mapping[str, Any],
+) -> dict[str, Any]:
+    """确认云端业务成功且回写的签名清单与本地产物完全一致。"""
+    _validate_manifest_shape(manifest, signed=True)
+    if response_envelope.get("code") not in (0, 200):
+        raise ManifestError(
+            "云端业务失败 "
+            f"code={response_envelope.get('code')} msg={response_envelope.get('msg')}"
+        )
+    published = response_envelope.get("data")
+    if published != manifest:
+        raise ManifestError("云端回写清单与本地签名清单不一致")
+    return dict(manifest)
+
+
 def upsert_release_package(
     manifest_path: Path,
     *,
@@ -584,6 +601,33 @@ def _build_archive_command(arguments: argparse.Namespace) -> None:
     print(json.dumps({"archive": arguments.archive}, ensure_ascii=False, sort_keys=True))
 
 
+def _load_json_object(path: Path, context: str) -> dict[str, Any]:
+    try:
+        value = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as error:
+        raise ManifestError(f"{context}无法读取") from error
+    if not isinstance(value, dict):
+        raise ManifestError(f"{context}根必须是对象")
+    return value
+
+
+def _verify_publish_response_command(arguments: argparse.Namespace) -> None:
+    manifest = _load_json_object(Path(arguments.manifest), "本地发布清单")
+    response_envelope = _load_json_object(Path(arguments.response), "云端发布响应")
+    published = verify_publish_response(manifest, response_envelope)
+    print(
+        json.dumps(
+            {
+                "artifact_id": published["artifact_id"],
+                "release_sequence": published["release_sequence"],
+                "version": published["version"],
+            },
+            ensure_ascii=False,
+            sort_keys=True,
+        )
+    )
+
+
 def _load_revocations(path: str | None) -> list[dict[str, Any]]:
     if not path:
         return []
@@ -644,6 +688,11 @@ def _parser() -> argparse.ArgumentParser:
     archive.add_argument("--root", required=True)
     archive.add_argument("--archive", required=True)
     archive.set_defaults(handler=_build_archive_command)
+
+    publish_response = subparsers.add_parser("verify-publish-response")
+    publish_response.add_argument("--manifest", required=True)
+    publish_response.add_argument("--response", required=True)
+    publish_response.set_defaults(handler=_verify_publish_response_command)
 
     upsert = subparsers.add_parser("upsert-package")
     upsert.add_argument("--manifest", required=True)

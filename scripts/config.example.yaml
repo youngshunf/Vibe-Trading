@@ -31,10 +31,13 @@ signing_key: /secure/path/finance-release-key.pem
 # 可选：JSON 数组，记录已撤销 Revision 的 version/platform/sha256/revoked_at/reason/critical。
 revocations_file: ""
 
-# 云端 API 基址（给了即上传包并取得稳定 URL）。现端点仍写迁移期旧配置；
-# FIN-F1-2 受信激活入口落地前，上传成功不代表 v2 清单已生产激活。
+# 云端 API 基址（给了即上传包并取得稳定 URL，最后发布完整 Ed25519 签名清单）。
+# 脚本仅在全部目标包上传、签名完成后发布一次清单，并严格核对云端回写。
 # 生产：https://api.huanxing.dcfuture.cn；本地 dev：http://127.0.0.1:8020
 publish_url: https://api.huanxing.dcfuture.cn
+
+# 跨 OS 构建机设为 1：只上传当前平台包，最终清单交给发布协调器汇总、重签并发布一次。
+defer_release_publish: 0
 
 # 云端 finance 应用目录行 ID（hasn_app_catalog 里 app_id='finance' 那行主键；生产/本地可能不同）
 app_pk: 0
