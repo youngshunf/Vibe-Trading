@@ -28,6 +28,7 @@ from vibe_release_manifest import (  # noqa: E402
     build_file_manifest,
     sign_release_manifest,
     verify_archive,
+    verify_publish_response,
     verify_release_manifest,
 )
 
@@ -290,6 +291,22 @@ def test_release_manifest_cli_accumulates_platforms_and_resigns(tmp_path: Path) 
         )
 
 
+def test_publish_response_must_echo_exact_signed_manifest() -> None:
+    now = datetime(2026, 7, 19, tzinfo=UTC)
+    private_pem, _public_pem = _key_material()
+    manifest = sign_release_manifest(_unsigned_manifest(now), private_pem)
+
+    assert verify_publish_response(manifest, {"code": 200, "data": manifest}) == manifest
+
+    changed = json.loads(json.dumps(manifest))
+    changed["release_sequence"] = 43
+    with pytest.raises(ManifestError, match="与本地签名清单不一致"):
+        verify_publish_response(manifest, {"code": 200, "data": changed})
+
+    with pytest.raises(ManifestError, match="云端业务失败"):
+        verify_publish_response(manifest, {"code": 422, "msg": "发布序列冲突"})
+
+
 def test_no_venv_package_cannot_enter_publish_path() -> None:
     result = subprocess.run(
         [
@@ -309,6 +326,31 @@ def test_no_venv_package_cannot_enter_publish_path() -> None:
     assert result.returncode != 0
     assert "--no-venv" in result.stderr
     assert "禁止发布" in result.stderr
+
+
+def test_release_script_exposes_safe_cross_os_deferred_mode() -> None:
+    help_result = subprocess.run(
+        ["bash", str(_SCRIPTS / "package-vibe-trading.sh"), "--help"],
+        cwd=_REPO_ROOT,
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    assert "--defer-release-publish" in help_result.stdout
+
+    invalid_result = subprocess.run(
+        [
+            "bash",
+            str(_SCRIPTS / "package-vibe-trading.sh"),
+            "--defer-release-publish",
+        ],
+        cwd=_REPO_ROOT,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert invalid_result.returncode != 0
+    assert "只适用于已开启的平台包上传" in invalid_result.stderr
 
 
 def test_structure_only_build_uses_real_source_and_has_no_release_manifest(tmp_path: Path) -> None:

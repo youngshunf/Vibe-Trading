@@ -71,8 +71,10 @@ set -euo pipefail
 #   --publish=<url>   云端 API 基址（配置键 publish_url）。给了即开启发布：POST 引擎包到
 #                     <url>/api/v1/hasn/app-catalogs/<pk>/engine-package，落公共桶 + 写
 #                     迁移期 config_json.engine；服务端**权威**算 sha256/size、与本地交叉校验。
-#                     该旧端点只用于取得稳定 URL，不会发布 v2 签名清单；FIN-F1-2 受信激活入口
-#                     落地前，生成 manifest.json 不等于生产激活。
+#                     全平台包完成并签名后，再 POST 同一 catalog 的 finance-engine-release，
+#                     严格核对云端回写与本地 schema-v2 清单完全一致。
+#   --defer-release-publish  只上传平台包并保留本地签名清单，不发布清单。跨 OS 构建时使用；
+#                            协调器汇总全部平台、重新签名后，只能发布一次最终清单。
 #   --app-pk=<id>     发布必填：云端应用目录行 ID（配置键 app_pk；app_id='finance' 那行主键）。
 #   --admin-token=<t> 发布必填：管理端 JWT（配置键 admin_token；或环境变量 HASN_ADMIN_TOKEN）。
 #   --base-url=<u>    仅手工上传场景：manifest.url=<base>/<包名>（配置键 base_url）。
@@ -113,6 +115,7 @@ MINIMUM_DAEMON_VERSION="${VIBE_TRADING_ENGINE_MINIMUM_DAEMON_VERSION:-}"
 KEY_ID="${VIBE_TRADING_ENGINE_KEY_ID:-}"
 SIGNING_KEY="${VIBE_TRADING_ENGINE_SIGNING_KEY:-}"
 REVOCATIONS_FILE="${VIBE_TRADING_ENGINE_REVOCATIONS_FILE:-}"
+DEFER_RELEASE_PUBLISH="${VIBE_TRADING_ENGINE_DEFER_RELEASE_PUBLISH:-}"
 NO_VENV=0
 ENV_NAME=""
 
@@ -161,6 +164,7 @@ load_config_file() {
       key_id) [[ -z "${KEY_ID}" ]] && KEY_ID="${value}" ;;
       signing_key) [[ -z "${SIGNING_KEY}" ]] && SIGNING_KEY="${value}" ;;
       revocations_file) [[ -z "${REVOCATIONS_FILE}" ]] && REVOCATIONS_FILE="${value}" ;;
+      defer_release_publish) [[ -z "${DEFER_RELEASE_PUBLISH}" ]] && DEFER_RELEASE_PUBLISH="${value}" ;;
       *) echo "[vt-pkg] ⚠ 配置文件未知键，忽略: ${key}" >&2 ;;
     esac
   done < "${file}"
@@ -202,6 +206,7 @@ for arg in "$@"; do
     --key-id=*) KEY_ID="${arg#--key-id=}" ;;
     --signing-key=*) SIGNING_KEY="${arg#--signing-key=}" ;;
     --revocations=*) REVOCATIONS_FILE="${arg#--revocations=}" ;;
+    --defer-release-publish) DEFER_RELEASE_PUBLISH=1 ;;
     --no-venv) NO_VENV=1 ;;
     --help | -h) usage; exit 0 ;;
     aarch64 | arm64) ARCH_INPUT=aarch64 ;;
@@ -213,6 +218,16 @@ for arg in "$@"; do
       ;;
   esac
 done
+
+DEFER_RELEASE_PUBLISH="${DEFER_RELEASE_PUBLISH:-0}"
+case "${DEFER_RELEASE_PUBLISH}" in
+  0 | 1) ;;
+  *) echo "[vt-pkg] defer_release_publish 只允许 0 或 1" >&2; exit 1 ;;
+esac
+if [[ "${DEFER_RELEASE_PUBLISH}" == "1" && -z "${PUBLISH_URL}" ]]; then
+  echo "[vt-pkg] --defer-release-publish 只适用于已开启的平台包上传" >&2
+  exit 1
+fi
 
 if [[ "${NO_VENV}" == "1" && -n "${PUBLISH_URL}" ]]; then
   echo "[vt-pkg] --no-venv 产物不可运行，禁止发布到任何远程或本地发布端点" >&2
@@ -316,7 +331,7 @@ echo "[vt-pkg] OS=${OS_KEY} 目标架构=[${TARGETS}] 版本=${VERSION} 源=${SR
 [[ "${NO_VENV}" == "1" ]] && echo "[vt-pkg] ⚠ --no-venv：仅验证流水线，产出 STRUCTURE-only 包（不可运行）"
 [[ -n "${PUBLISH_URL}" ]] && echo "[vt-pkg] 发布开启 → ${PUBLISH_URL}（app-pk=${APP_PK}）" || echo "[vt-pkg] 未配 --publish/VIBE_TRADING_ENGINE_PUBLISH_URL：只打包不发布"
 
-# ---- 单架构处理：staging → venv → 逐文件清单 → zip → 发布 → 签名清单 ------
+# ---- 单架构处理：staging → venv → 逐文件清单 → zip → 上传包 → 更新签名清单 ------
 process_one_arch() {
   local ARCH_KEY="$1"
   local OS_ARCH="${OS_KEY}-${ARCH_KEY}"
@@ -527,6 +542,34 @@ PY
   echo "[vt-pkg] 签名清单已更新：${MANIFEST}（${OS_ARCH}，release_sequence=${RELEASE_SEQUENCE}）"
 }
 
+
+publish_release_manifest() {
+  local MANIFEST="${OUT_DIR}/manifest.json"
+  local ENDPOINT="${PUBLISH_URL%/}/api/v1/hasn/app-catalogs/${APP_PK}/finance-engine-release"
+  local HTTP_BODY_FILE="${OUT_DIR}/.publish-release-resp.json" HTTP_CODE
+  echo "[vt-pkg] 发布签名清单 → ${ENDPOINT}（release_sequence=${RELEASE_SEQUENCE}）"
+  HTTP_CODE="$(curl -sS -o "${HTTP_BODY_FILE}" -w '%{http_code}' \
+    -X POST "${ENDPOINT}" \
+    -H "Authorization: Bearer ${ADMIN_TOKEN}" \
+    -F "manifest=@${MANIFEST};type=application/json" || echo "000")"
+  if [[ "${HTTP_CODE}" != "200" ]]; then
+    echo "[vt-pkg] ✗ 签名清单发布失败（HTTP ${HTTP_CODE}）：" >&2
+    cat "${HTTP_BODY_FILE}" >&2 2>/dev/null || true
+    echo >&2
+    rm -f "${HTTP_BODY_FILE}"
+    exit 1
+  fi
+  if ! uv run --frozen python "${SCRIPT_DIR}/vibe_release_manifest.py" verify-publish-response \
+    --manifest="${MANIFEST}" \
+    --response="${HTTP_BODY_FILE}" >/dev/null; then
+    rm -f "${HTTP_BODY_FILE}"
+    exit 1
+  fi
+  rm -f "${HTTP_BODY_FILE}"
+  echo "[vt-pkg] ✓ 签名清单已由云端持久化并进入平台配置"
+}
+
+
 # ---- 主流程：清旧 manifest（本次产一份干净的；跨机构建由发布协调器合并并重签）+ 遍历目标 ----
 rm -f "${OUT_DIR}/manifest.json"
 for arch in ${TARGETS}; do
@@ -537,9 +580,10 @@ echo
 if [[ "${NO_VENV}" == "1" ]]; then
   echo "[vt-pkg] ✅ STRUCTURE-only 验证完成：架构 [${TARGETS}] 版本 ${VERSION}；无生产 manifest"
 else
+  if [[ -n "${PUBLISH_URL}" && "${DEFER_RELEASE_PUBLISH}" != "1" ]]; then
+    publish_release_manifest
+  elif [[ "${DEFER_RELEASE_PUBLISH}" == "1" ]]; then
+    echo "[vt-pkg] 已按跨 OS 模式推迟清单发布；协调器须汇总全部平台、重新签名后只发布一次最终清单。"
+  fi
   echo "[vt-pkg] ✅ 全部完成：架构 [${TARGETS}] 版本 ${VERSION}。受签名 manifest: ${OUT_DIR}/manifest.json"
-fi
-if [[ -n "${PUBLISH_URL}" && "${NO_VENV}" != "1" ]]; then
-  echo "[vt-pkg] 包对象已上传；v2 签名 manifest 仍为本地产物，FIN-F1-2 受信激活入口落地前不得宣称生产激活。"
-  echo "[vt-pkg] 跨 OS（linux/win）须由发布协调器合并所有平台条目并用同一密钥重签，再提交受信激活入口。"
 fi
