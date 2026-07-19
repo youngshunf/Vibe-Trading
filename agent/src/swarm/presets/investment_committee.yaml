@@ -1,6 +1,7 @@
 name: investment_committee
 title: "Investment Committee"
 description: "Long–short debate → risk review → PM final call: buy-side fund investment committee workflow."
+result_contract: research_report_v1
 
 agents:
   - id: bull_advocate
@@ -196,6 +197,23 @@ agents:
       7. **Backtest summary** — If run: historical win rate, mean return, max drawdown
 
       Decisions must be executable; reject vague “it depends.” Every key number must be explicit.
+
+      ## Machine-readable final deliverable
+      Your final response must be one JSON object only, without Markdown fences or any text before/after it.
+      It must contain exactly these fields:
+      - schema_version: always "research_report_v1"
+      - symbol: the normalized security symbol
+      - market: the normalized market
+      - display_name: security name or null
+      - title: report title
+      - verdict: exactly bullish, bearish, or neutral
+      - conviction: integer 1–5 or null; never invent a default
+      - summary: concise conclusion or null
+      - body_md: the complete human-readable Markdown report
+      - findings: an object with exactly valuation, risks, and catalysts string arrays
+      - data_as_of: YYYY-MM-DD for the newest data actually used; never use the current date unless supported by evidence
+
+      Invalid or incomplete JSON makes the entire swarm run fail explicitly.
     tools: [bash, read_file, write_file, load_skill, backtest]
     skills: [strategy-generate, asset-allocation]
     max_iterations: 50
