@@ -16,16 +16,18 @@ set -euo pipefail
 #   ├── venv/            # bundled standalone Python + 依赖（无 symlink，可迁移）
 #   └── agent/           # 引擎本体（fork 的 agent/ 整树，剔除开发垃圾）
 #
-#   - 解压后落到 `<install_root>/current/`，故 locator 契约 = `venv/bin/python` + `agent/mcp_server.py`。
+#   - 生产安装由 hasn-local-runtime-artifact 展开到不可变 Revision；`current/` 只允许旧客户端迁移读取，
+#     不再是运行权威。Package Adapter 从 ActiveRevision 获取根目录后使用
+#     `venv/bin/python` + `agent/mcp_server.py`。
 #   - 结构闸门：包内必须有 `agent/mcp_server.py` 与 `venv/bin/python`（本脚本与 install 侧同一硬校验）。
 #   - 启动方式（daemon driver.rs）：
-#       cd <install_root>/current && venv/bin/python agent/mcp_server.py --transport http --host 127.0.0.1 --port <动态>
+#       cd <RevisionBinding.root> && venv/bin/python agent/mcp_server.py --transport http --host 127.0.0.1 --port <动态>
 #     **必须 --transport http**：上游 stdio 无条件开启 shell 工具且 env 闸对它无效，
 #     等于把 bash 交给 swarm 里的 LLM。见 03 设计文档 §2.2/§2.3「安全选项 A」与
 #     `agent/tests/test_transport_shell_gate.py`（守卫测试真调 main() 钉死这条）。
-#   - manifest.json 是**包外**的分发清单（`{"version","packages":{"<os-arch>":{...}}}`），
-#     不进 zip —— 03 设计文档 §1.1 的包内容图把它画进了包内，那是笔误，以本脚本与 film/reel
-#     既有 daemon 契约为准（daemon 先拉 manifest、再按 os-arch 下对应 zip）。
+#   - `file-manifest.json` 在 zip 内，逐一声明普通文件的路径、大小、SHA-256 与执行权限；
+#     `manifest.json` 在包外，使用 Ed25519 签名 schema v2，覆盖 ArtifactId、平台包、发布序列、
+#     有效期、展开预算与撤销材料。daemon 先验签，再选择平台包并按逐文件清单 fail closed。
 #
 # ## 运行期配置：全部 env 注入，包内不带 config.yaml
 #
@@ -68,11 +70,20 @@ set -euo pipefail
 #   --out=<dir>       产物输出目录（配置键 out；默认 <引擎仓根>/.engine-build/vibe-trading）。
 #   --publish=<url>   云端 API 基址（配置键 publish_url）。给了即开启发布：POST 引擎包到
 #                     <url>/api/v1/hasn/app-catalogs/<pk>/engine-package，落公共桶 + 写
-#                     config_json.engine + push platform_config（在线 daemon 秒级重拉、自动装引擎）。
-#                     服务端**权威**算 sha256/size、与本地交叉校验。
+#                     迁移期 config_json.engine；服务端**权威**算 sha256/size、与本地交叉校验。
+#                     该旧端点只用于取得稳定 URL，不会发布 v2 签名清单；FIN-F1-2 受信激活入口
+#                     落地前，生成 manifest.json 不等于生产激活。
 #   --app-pk=<id>     发布必填：云端应用目录行 ID（配置键 app_pk；app_id='finance' 那行主键）。
 #   --admin-token=<t> 发布必填：管理端 JWT（配置键 admin_token；或环境变量 HASN_ADMIN_TOKEN）。
 #   --base-url=<u>    仅手工上传场景：manifest.url=<base>/<包名>（配置键 base_url）。
+#   --release-sequence=<n>  单调发布序列（配置键 release_sequence；生产可运行包必填）。
+#   --issued-at=<time>      UTC RFC3339 签发时间（配置键 issued_at；多平台构建必须一致）。
+#   --expires-at=<time>     UTC RFC3339 失效时间（配置键 expires_at；生产可运行包必填）。
+#   --channel=<name>        发布通道（配置键 channel；默认 stable）。
+#   --minimum-daemon-version=<v> 最低 daemon 版本（配置键 minimum_daemon_version；必填）。
+#   --key-id=<id>           受信 Ed25519 公钥标识（配置键 key_id；必填）。
+#   --signing-key=<path>    Ed25519 PKCS8 PEM 私钥路径（配置键 signing_key；必填，不写日志）。
+#   --revocations=<path>    可选撤销材料 JSON 数组（配置键 revocations_file）。
 #   --no-venv         **仅验证打包流水线**：跳过 venv 构建，产出 STRUCTURE-only 包（不可运行）。
 #   --help
 #
@@ -94,6 +105,14 @@ BASE_URL="${VIBE_TRADING_ENGINE_BASE_URL:-}"
 PUBLISH_URL="${VIBE_TRADING_ENGINE_PUBLISH_URL:-}"
 APP_PK="${VIBE_TRADING_ENGINE_APP_PK:-}"
 ADMIN_TOKEN="${HASN_ADMIN_TOKEN:-}"
+RELEASE_SEQUENCE="${VIBE_TRADING_ENGINE_RELEASE_SEQUENCE:-}"
+ISSUED_AT="${VIBE_TRADING_ENGINE_ISSUED_AT:-}"
+EXPIRES_AT="${VIBE_TRADING_ENGINE_EXPIRES_AT:-}"
+CHANNEL="${VIBE_TRADING_ENGINE_CHANNEL:-}"
+MINIMUM_DAEMON_VERSION="${VIBE_TRADING_ENGINE_MINIMUM_DAEMON_VERSION:-}"
+KEY_ID="${VIBE_TRADING_ENGINE_KEY_ID:-}"
+SIGNING_KEY="${VIBE_TRADING_ENGINE_SIGNING_KEY:-}"
+REVOCATIONS_FILE="${VIBE_TRADING_ENGINE_REVOCATIONS_FILE:-}"
 NO_VENV=0
 ENV_NAME=""
 
@@ -134,6 +153,14 @@ load_config_file() {
       src) [[ -z "${SRC}" ]] && SRC="${value}" ;;
       out) [[ -z "${OUT_DIR}" ]] && OUT_DIR="${value}" ;;
       base_url) [[ -z "${BASE_URL}" ]] && BASE_URL="${value}" ;;
+      release_sequence) [[ -z "${RELEASE_SEQUENCE}" ]] && RELEASE_SEQUENCE="${value}" ;;
+      issued_at) [[ -z "${ISSUED_AT}" ]] && ISSUED_AT="${value}" ;;
+      expires_at) [[ -z "${EXPIRES_AT}" ]] && EXPIRES_AT="${value}" ;;
+      channel) [[ -z "${CHANNEL}" ]] && CHANNEL="${value}" ;;
+      minimum_daemon_version) [[ -z "${MINIMUM_DAEMON_VERSION}" ]] && MINIMUM_DAEMON_VERSION="${value}" ;;
+      key_id) [[ -z "${KEY_ID}" ]] && KEY_ID="${value}" ;;
+      signing_key) [[ -z "${SIGNING_KEY}" ]] && SIGNING_KEY="${value}" ;;
+      revocations_file) [[ -z "${REVOCATIONS_FILE}" ]] && REVOCATIONS_FILE="${value}" ;;
       *) echo "[vt-pkg] ⚠ 配置文件未知键，忽略: ${key}" >&2 ;;
     esac
   done < "${file}"
@@ -167,6 +194,14 @@ for arg in "$@"; do
     --publish=*) PUBLISH_URL="${arg#--publish=}" ;;
     --app-pk=*) APP_PK="${arg#--app-pk=}" ;;
     --admin-token=*) ADMIN_TOKEN="${arg#--admin-token=}" ;;
+    --release-sequence=*) RELEASE_SEQUENCE="${arg#--release-sequence=}" ;;
+    --issued-at=*) ISSUED_AT="${arg#--issued-at=}" ;;
+    --expires-at=*) EXPIRES_AT="${arg#--expires-at=}" ;;
+    --channel=*) CHANNEL="${arg#--channel=}" ;;
+    --minimum-daemon-version=*) MINIMUM_DAEMON_VERSION="${arg#--minimum-daemon-version=}" ;;
+    --key-id=*) KEY_ID="${arg#--key-id=}" ;;
+    --signing-key=*) SIGNING_KEY="${arg#--signing-key=}" ;;
+    --revocations=*) REVOCATIONS_FILE="${arg#--revocations=}" ;;
     --no-venv) NO_VENV=1 ;;
     --help | -h) usage; exit 0 ;;
     aarch64 | arm64) ARCH_INPUT=aarch64 ;;
@@ -178,6 +213,11 @@ for arg in "$@"; do
       ;;
   esac
 done
+
+if [[ "${NO_VENV}" == "1" && -n "${PUBLISH_URL}" ]]; then
+  echo "[vt-pkg] --no-venv 产物不可运行，禁止发布到任何远程或本地发布端点" >&2
+  exit 1
+fi
 
 # 目标 OS 由构建主机决定（跨 OS 的 Python 构建不在 bash 单机范围内；同 OS 跨架构可经 uv/Rosetta）。
 case "$(uname -s)" in
@@ -239,6 +279,21 @@ fi
 command -v uv >/dev/null 2>&1 || { echo "[vt-pkg] 需要 uv（导出锁文件依赖 / 安装 standalone Python）" >&2; exit 1; }
 if [[ "${NO_VENV}" != "1" ]]; then
   command -v rsync >/dev/null 2>&1 || { echo "[vt-pkg] 需要 rsync 实体化拷贝解释器树（-aL 解引用 symlink）" >&2; exit 1; }
+  CHANNEL="${CHANNEL:-stable}"
+  [[ "${RELEASE_SEQUENCE}" =~ ^[1-9][0-9]*$ ]] || { echo "[vt-pkg] 可运行包必须提供正整数 release_sequence" >&2; exit 1; }
+  [[ -n "${ISSUED_AT}" ]] || { echo "[vt-pkg] 可运行包必须提供 issued_at（UTC RFC3339，多平台一致）" >&2; exit 1; }
+  [[ -n "${EXPIRES_AT}" ]] || { echo "[vt-pkg] 可运行包必须提供 expires_at（UTC RFC3339）" >&2; exit 1; }
+  [[ -n "${MINIMUM_DAEMON_VERSION}" ]] || { echo "[vt-pkg] 可运行包必须提供 minimum_daemon_version" >&2; exit 1; }
+  [[ -n "${KEY_ID}" ]] || { echo "[vt-pkg] 可运行包必须提供 key_id" >&2; exit 1; }
+  [[ -n "${SIGNING_KEY}" && -f "${SIGNING_KEY}" ]] || { echo "[vt-pkg] 可运行包必须提供存在的 Ed25519 signing_key 文件" >&2; exit 1; }
+  if [[ -n "${REVOCATIONS_FILE}" && ! -f "${REVOCATIONS_FILE}" ]]; then
+    echo "[vt-pkg] revocations_file 不存在：${REVOCATIONS_FILE}" >&2
+    exit 1
+  fi
+  if [[ -z "${PUBLISH_URL}" && -z "${BASE_URL}" ]]; then
+    echo "[vt-pkg] 未走一键发布时必须提供 base_url，禁止把占位 URL 写进受签名清单" >&2
+    exit 1
+  fi
 fi
 
 # 发布前置：fail-fast，缺要素立即报错（别等打完几百 MB 才发现没法上传）。
@@ -261,7 +316,7 @@ echo "[vt-pkg] OS=${OS_KEY} 目标架构=[${TARGETS}] 版本=${VERSION} 源=${SR
 [[ "${NO_VENV}" == "1" ]] && echo "[vt-pkg] ⚠ --no-venv：仅验证流水线，产出 STRUCTURE-only 包（不可运行）"
 [[ -n "${PUBLISH_URL}" ]] && echo "[vt-pkg] 发布开启 → ${PUBLISH_URL}（app-pk=${APP_PK}）" || echo "[vt-pkg] 未配 --publish/VIBE_TRADING_ENGINE_PUBLISH_URL：只打包不发布"
 
-# ---- 单架构处理：staging → venv → zip → manifest →（可选）发布 -------------
+# ---- 单架构处理：staging → venv → 逐文件清单 → zip → 发布 → 签名清单 ------
 process_one_arch() {
   local ARCH_KEY="$1"
   local OS_ARCH="${OS_KEY}-${ARCH_KEY}"
@@ -324,11 +379,10 @@ process_one_arch() {
     fi
 
     # 冒烟：用包内 python 真的 import 一次引擎注册表 —— 证明依赖装全了、且 shell 工具默认关闭。
-    # 只在本机架构上做（跨架构产物本机跑不起来，那是目标机的事）。
+    # macOS arm64 构建 x86_64 时通过 Rosetta 执行；其他无法本机执行的跨架构包留给目标构建机。
     local HOST_ARCH; HOST_ARCH="$(uname -m)"; [[ "${HOST_ARCH}" == "arm64" ]] && HOST_ARCH="aarch64"
-    if [[ "${ARCH_KEY}" == "${HOST_ARCH}" ]]; then
-      echo "[vt-pkg] 冒烟：包内 python 载入工具注册表 + 核对 shell 闸"
-      ( cd "${STAGE}/agent" && "${STAGE}/venv/bin/python" - <<'PY'
+    run_registry_smoke() {
+      ( cd "${STAGE}/agent" && "$@" - <<'PY'
 import sys
 
 from src.tools import build_registry
@@ -341,16 +395,47 @@ for shell_tool in ("bash", "background_run"):
         sys.exit(f"[vt-pkg] ✗ 冒烟失败：默认注册表暴露了 shell 工具 {shell_tool}")
 print(f"[vt-pkg] ✓ 冒烟通过：{len(names)} 个工具，无 shell 工具")
 PY
-      ) || exit 1
+      )
+    }
+    if [[ "${ARCH_KEY}" == "${HOST_ARCH}" ]]; then
+      echo "[vt-pkg] 冒烟：包内 python 载入工具注册表 + 核对 shell 闸"
+      run_registry_smoke "${STAGE}/venv/bin/python" || exit 1
+    elif [[ "${OS_KEY}" == "darwin" && "${HOST_ARCH}" == "aarch64" && "${ARCH_KEY}" == "x86_64" ]] \
+      && arch -x86_64 /usr/bin/true >/dev/null 2>&1; then
+      echo "[vt-pkg] 冒烟：通过 Rosetta 载入 x86_64 工具注册表 + 核对 shell 闸"
+      run_registry_smoke arch -x86_64 "${STAGE}/venv/bin/python" || exit 1
+    else
+      echo "[vt-pkg] 当前主机不能执行 ${OS_ARCH} 包，冒烟必须由对应目标构建机补齐" >&2
     fi
   fi
 
-  # 打包 zip（顶层 venv/ + agent/）+ sha256 + size。
+  # 逐文件清单在归档前生成；扫描会拒绝 symlink、hardlink 与特殊文件。
+  local FILE_META_JSON FILE_MANIFEST_SHA256 INSTALLED_SIZE
+  FILE_META_JSON="$(uv run --frozen python "${SCRIPT_DIR}/vibe_release_manifest.py" \
+    build-file-manifest --root="${STAGE}")"
+  FILE_MANIFEST_SHA256="$(FILE_META_JSON="${FILE_META_JSON}" python3 - <<'PY'
+import json
+import os
+
+print(json.loads(os.environ["FILE_META_JSON"])["file_manifest_sha256"])
+PY
+)"
+  INSTALLED_SIZE="$(FILE_META_JSON="${FILE_META_JSON}" python3 - <<'PY'
+import json
+import os
+
+print(json.loads(os.environ["FILE_META_JSON"])["installed_size"])
+PY
+)"
+
+  # 打包 zip（顶层 venv/ + agent/ + file-manifest.json）+ sha256 + size。
   local PKG_NAME="vibe-trading-${OS_ARCH}-${VERSION}.zip"
   local PKG_PATH="${OUT_DIR}/${PKG_NAME}"
   rm -f "${PKG_PATH}"
   echo "[vt-pkg] 打包 → ${PKG_PATH}"
-  ( cd "${STAGE}" && zip -r -q -X "${PKG_PATH}" . -x '.*' )
+  uv run --frozen python "${SCRIPT_DIR}/vibe_release_manifest.py" build-archive \
+    --root="${STAGE}" \
+    --archive="${PKG_PATH}" >/dev/null
 
   local SHA256 SIZE
   if command -v sha256sum >/dev/null 2>&1; then
@@ -360,48 +445,18 @@ PY
   fi
   SIZE="$(wc -c < "${PKG_PATH}" | tr -d ' ')"
 
-  # manifest.json：合并本架构条目（同 OUT_DIR 多架构累积进同一 manifest）。
+  # 再从最终 zip 读取逐文件清单逐项复验，避免“扫描后、打包前”漂移或归档工具引入额外入口。
+  uv run --frozen python "${SCRIPT_DIR}/vibe_release_manifest.py" verify-archive \
+    --archive="${PKG_PATH}" \
+    --file-manifest-sha256="${FILE_MANIFEST_SHA256}" >/dev/null
+
   local MANIFEST="${OUT_DIR}/manifest.json"
   local PKG_URL="${BASE_URL:+${BASE_URL%/}/${PKG_NAME}}"
-  PKG_URL="${PKG_URL:-REPLACE_WITH_OBJECT_STORAGE_URL/${PKG_NAME}}"
-  local PKG_KEY="vibe-trading/${VERSION}/${PKG_NAME}"
-  MANIFEST="${MANIFEST}" OS_ARCH="${OS_ARCH}" VERSION="${VERSION}" \
-  PKG_KEY="${PKG_KEY}" PKG_URL="${PKG_URL}" SHA256="${SHA256}" SIZE="${SIZE}" \
-  python3 - <<'PY'
-import json, os, sys
-
-path = os.environ["MANIFEST"]
-os_arch = os.environ["OS_ARCH"]
-version = os.environ["VERSION"]
-entry = {
-    "key": os.environ["PKG_KEY"],
-    "url": os.environ["PKG_URL"],
-    "sha256": os.environ["SHA256"],
-    "size": int(os.environ["SIZE"]),
-}
-data = {"version": version, "packages": {}}
-if os.path.exists(path):
-    with open(path, encoding="utf-8") as fh:
-        data = json.load(fh)
-    if data.get("version") and data["version"] != version:
-        sys.exit(f"manifest 版本冲突：已有 {data['version']}，本次 {version}（多架构须同版本）")
-    data["version"] = version
-    data.setdefault("packages", {})
-data["packages"][os_arch] = entry
-with open(path, "w", encoding="utf-8") as fh:
-    json.dump(data, fh, ensure_ascii=False, indent=2)
-    fh.write("\n")
-print(f"[vt-pkg] manifest 写入 {path}（packages: {', '.join(sorted(data['packages']))}）")
-PY
 
   echo "[vt-pkg] 完成 ${OS_ARCH}: ${PKG_PATH}（sha256=${SHA256:0:12}… size=${SIZE}）"
-  if [[ "${PKG_URL}" == REPLACE_WITH_OBJECT_STORAGE_URL/* && -z "${PUBLISH_URL}" ]]; then
-    echo "            ⚠ url 为占位：用 --base-url 重跑 manifest，或配 --publish 一键发布。"
-  fi
 
   # 一键发布：POST 引擎包到云端 admin 端点（落公共桶 + 写 config_json.engine + push）。
   if [[ -n "${PUBLISH_URL}" ]]; then
-    [[ "${NO_VENV}" == "1" ]] && echo "[vt-pkg] ⚠ --publish 配 --no-venv：上传的是 STRUCTURE-only 不可运行包，仅供 dev/test 验证链路，切勿指向生产！" >&2
     local ENDPOINT="${PUBLISH_URL%/}/api/v1/hasn/app-catalogs/${APP_PK}/engine-package"
     echo "[vt-pkg] 发布 → ${ENDPOINT}（os_arch=${OS_ARCH} version=${VERSION}）"
     # 服务端权威算 sha256（交叉校验）+ size，落公共桶，写 config_json.engine，push platform_config。
@@ -421,9 +476,11 @@ PY
       rm -f "${HTTP_BODY_FILE}"
       exit 1
     fi
-    # 解析统一信封 {code,msg,data}：code 非 0 即业务失败；data 为写入后的 engine 配置。
-    RESP_FILE="${HTTP_BODY_FILE}" OS_ARCH="${OS_ARCH}" python3 - <<'PY' || exit 1
-import json, os, sys
+    # 解析统一信封并取服务端实际分配的稳定 URL；签名清单禁止写上传前猜测的地址。
+    PKG_URL="$(RESP_FILE="${HTTP_BODY_FILE}" OS_ARCH="${OS_ARCH}" python3 - <<'PY'
+import json
+import os
+import sys
 
 with open(os.environ["RESP_FILE"], encoding="utf-8") as fh:
     env = json.load(fh)
@@ -433,22 +490,56 @@ if code not in (0, 200):
     sys.exit(1)
 engine = env.get("data") or {}
 pkgs = engine.get("packages") or {}
-print(f"[vt-pkg] ✓ 已发布 {os.environ['OS_ARCH']}。云端 engine.version={engine.get('version')} "
-      f"packages={', '.join(sorted(pkgs))}")
+package = pkgs.get(os.environ["OS_ARCH"]) or {}
+url = package.get("url")
+if not isinstance(url, str) or not url:
+    print("[vt-pkg] ✗ 云端响应缺少已发布包稳定 URL", file=sys.stderr)
+    sys.exit(1)
+print(url)
 PY
+)" || exit 1
+    echo "[vt-pkg] ✓ 已发布 ${OS_ARCH}，稳定 URL 已进入待签名清单"
     rm -f "${HTTP_BODY_FILE}"
   fi
+
+  if [[ "${NO_VENV}" == "1" ]]; then
+    echo "[vt-pkg] STRUCTURE-only 包已验证；不生成可被生产安装器接受的 manifest.json"
+    return 0
+  fi
+
+  uv run --frozen python "${SCRIPT_DIR}/vibe_release_manifest.py" upsert-package \
+    --manifest="${MANIFEST}" \
+    --version="${VERSION}" \
+    --release-sequence="${RELEASE_SEQUENCE}" \
+    --channel="${CHANNEL}" \
+    --issued-at="${ISSUED_AT}" \
+    --expires-at="${EXPIRES_AT}" \
+    --minimum-daemon-version="${MINIMUM_DAEMON_VERSION}" \
+    --key-id="${KEY_ID}" \
+    --signing-key="${SIGNING_KEY}" \
+    --platform="${OS_ARCH}" \
+    --url="${PKG_URL}" \
+    --sha256="${SHA256}" \
+    --compressed-size="${SIZE}" \
+    --installed-size-limit="${INSTALLED_SIZE}" \
+    --file-manifest-sha256="${FILE_MANIFEST_SHA256}" \
+    --revocations-file="${REVOCATIONS_FILE}" >/dev/null
+  echo "[vt-pkg] 签名清单已更新：${MANIFEST}（${OS_ARCH}，release_sequence=${RELEASE_SEQUENCE}）"
 }
 
-# ---- 主流程：清旧 manifest（本次产一份干净的；跨机累积由云端 publish 服务端合并）+ 遍历目标 ----
+# ---- 主流程：清旧 manifest（本次产一份干净的；跨机构建由发布协调器合并并重签）+ 遍历目标 ----
 rm -f "${OUT_DIR}/manifest.json"
 for arch in ${TARGETS}; do
   process_one_arch "${arch}"
 done
 
 echo
-echo "[vt-pkg] ✅ 全部完成：架构 [${TARGETS}] 版本 ${VERSION}。manifest: ${OUT_DIR}/manifest.json"
-if [[ -n "${PUBLISH_URL}" ]]; then
-  echo "[vt-pkg] 已发布到云端并 push platform_config —— 在线 daemon 将秒级重拉并自动安装引擎。"
-  echo "[vt-pkg] 跨 OS（linux/win）请在对应机器上跑同一脚本同一配置，云端按 os-arch 累积进同一 manifest。"
+if [[ "${NO_VENV}" == "1" ]]; then
+  echo "[vt-pkg] ✅ STRUCTURE-only 验证完成：架构 [${TARGETS}] 版本 ${VERSION}；无生产 manifest"
+else
+  echo "[vt-pkg] ✅ 全部完成：架构 [${TARGETS}] 版本 ${VERSION}。受签名 manifest: ${OUT_DIR}/manifest.json"
+fi
+if [[ -n "${PUBLISH_URL}" && "${NO_VENV}" != "1" ]]; then
+  echo "[vt-pkg] 包对象已上传；v2 签名 manifest 仍为本地产物，FIN-F1-2 受信激活入口落地前不得宣称生产激活。"
+  echo "[vt-pkg] 跨 OS（linux/win）须由发布协调器合并所有平台条目并用同一密钥重签，再提交受信激活入口。"
 fi
