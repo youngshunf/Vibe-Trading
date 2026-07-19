@@ -182,6 +182,23 @@ def test_mcp_server_exposes_well_known_tool_names() -> None:
     )
 
 
+def test_mcp_server_exposes_four_china_market_tools() -> None:
+    """四个中国市场工具必须由 MCP 服务显式暴露。"""
+    import asyncio
+
+    mod = _import_mcp_server()
+    tools = asyncio.run(mod.mcp.list_tools())
+    registered = {tool.name for tool in tools}
+
+    expected = {
+        "get_china_macro",
+        "get_fund_nav",
+        "get_fund_position",
+        "get_futures_daily",
+    }
+    assert expected <= registered
+
+
 class _RecordingRegistry:
     """Tiny registry stub that records MCP wrapper payloads."""
 
