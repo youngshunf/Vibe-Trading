@@ -233,6 +233,9 @@ def build_run_from_preset(preset_name: str, user_vars: dict[str, str]) -> SwarmR
         ValueError: If preset YAML is malformed.
     """
     data = load_preset(preset_name)
+    result_contract = data.get("result_contract")
+    if result_contract not in {None, "research_report_v1"}:
+        raise ValueError(f"Unsupported result contract: {result_contract}")
 
     # Parse agents
     agents: list[SwarmAgentSpec] = []
@@ -278,4 +281,5 @@ def build_run_from_preset(preset_name: str, user_vars: dict[str, str]) -> SwarmR
         agents=agents,
         tasks=tasks,
         created_at=now.isoformat(),
+        result_contract=result_contract,
     )

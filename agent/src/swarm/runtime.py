@@ -8,7 +8,6 @@ with cancellation and event callback support.
 from __future__ import annotations
 
 import logging
-import os
 import threading
 from concurrent.futures import (
     Future,
@@ -33,6 +32,7 @@ from src.swarm.models import (
     WorkerResult,
 )
 from src.swarm.presets import build_run_from_preset
+from src.swarm.research_report import publish_research_report
 from src.swarm.store import SwarmStore
 from src.swarm.task_store import (
     TaskStore,
@@ -305,6 +305,8 @@ class SwarmRuntime:
                             completed_at=now_iso,
                             artifacts=result.artifact_paths,
                             worker_iterations=result.iterations,
+                            input_tokens=result.input_tokens,
+                            output_tokens=result.output_tokens,
                         )
                         resolve_dependencies(run_dir / "tasks", tid)
                         self._emit_event(
@@ -329,6 +331,8 @@ class SwarmRuntime:
                             or f"worker did not complete (status={result.status})",
                             completed_at=datetime.now(timezone.utc).isoformat(),
                             worker_iterations=result.iterations,
+                            input_tokens=result.input_tokens,
+                            output_tokens=result.output_tokens,
                         )
                         self._emit_event(
                             run_id,
@@ -365,23 +369,48 @@ class SwarmRuntime:
                 self._make_event("run_error", data={"error": redact_internal_paths(str(exc))}),
             )
 
-        # Finalize run
-        final_status = (
-            RunStatus.cancelled if cancel_event.is_set() else RunStatus.completed if all_succeeded else RunStatus.failed
-        )
-        run.status = final_status
-        run.completed_at = datetime.now(timezone.utc).isoformat()
-
         # Sync tasks back to run model
         run.tasks = task_store.load_all()
 
         # Set final report from aggregation task (last task) if available
+        final_task_id: str | None = None
         if task_summaries:
             last_layer = layers[-1] if layers else []
             for tid in last_layer:
                 if tid in task_summaries:
                     run.final_report = task_summaries[tid]
+                    final_task_id = tid
                     break
+
+        if all_succeeded and run.result_contract == "research_report_v1":
+            try:
+                publish_research_report(run_dir, run.final_report or "")
+            except (OSError, ValueError) as exc:
+                all_succeeded = False
+                contract_error = redact_internal_paths(str(exc))
+                if final_task_id is not None:
+                    task_store.update_status(
+                        final_task_id,
+                        TaskStatus.failed,
+                        error=contract_error,
+                        completed_at=datetime.now(timezone.utc).isoformat(),
+                    )
+                run.tasks = task_store.load_all()
+                self._emit_event(
+                    run_id,
+                    self._make_event(
+                        "result_contract_failed",
+                        task_id=final_task_id,
+                        data={"error": contract_error},
+                    ),
+                )
+
+        # 只有稳定产物契约发布成功，run 才能进入 completed。
+        final_status = (
+            RunStatus.cancelled if cancel_event.is_set() else RunStatus.completed if all_succeeded else RunStatus.failed
+        )
+        run.status = final_status
+        run.completed_at = datetime.now(timezone.utc).isoformat()
 
         self._store.update_run(run)
         self._emit_event(run_id, self._make_event("run_completed", data={"status": final_status.value}))

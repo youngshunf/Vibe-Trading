@@ -71,6 +71,12 @@ def swarm_runs_root() -> Path:
     run_dir outside the allow-list (P03-A). Deriving it here once keeps
     the store location and the allow-list from drifting again.
     """
+    configured_root = os.getenv("VIBE_TRADING_DATA_ROOT", "").strip()
+    if configured_root:
+        data_root = Path(configured_root).expanduser()
+        if not data_root.is_absolute():
+            raise ValueError("VIBE_TRADING_DATA_ROOT 必须是绝对路径")
+        return data_root / "swarm" / "runs"
     return Path(__file__).resolve().parents[2] / ".swarm" / "runs"
 
 
