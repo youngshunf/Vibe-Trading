@@ -130,7 +130,7 @@ Comprehensive knowledge base covering:
 
 Use `load_skill(name)` to access full methodology docs with code templates.
 
-## Available MCP Tools (54)
+## Available MCP Tools (58)
 
 | Tool | Description | API Key |
 |------|-------------|---------|
@@ -145,6 +145,10 @@ Use `load_skill(name)` to access full methodology docs with code templates.
 | `analyze_options` | Black-Scholes price + Greeks | None |
 | `pattern_recognition` | Detect chart patterns (H&S, double top, etc.) | None |
 | `get_market_data` | Fetch OHLCV data (auto-detect + ordered fallback across 24 sources) | None* |
+| `get_china_macro` | China CPI/PPI/GDP/PMI history via AKShare | None |
+| `get_fund_nav` | China mutual-fund historical NAV via AKShare | None |
+| `get_fund_position` | China mutual-fund disclosed holdings via AKShare | None |
+| `get_futures_daily` | China domestic-futures daily bars via AKShare | None |
 | `get_fund_flow` | Capital fund-flow (main/retail net inflow) | None* |
 | `get_dragon_tiger` | Dragon-tiger list (龙虎榜) top buyer/seller seats | None* |
 | `get_northbound_flow` | Northbound (Stock Connect) net flow | None* |
