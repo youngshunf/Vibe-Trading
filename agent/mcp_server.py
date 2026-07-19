@@ -6,13 +6,14 @@ Zero API key required for HK/US/crypto research markets (yfinance, OKX,
 AKShare are free). Trading connector tools are profile-scoped and require the
 selected connector's own local app or OAuth setup.
 
-Surfaces 54 tools: skills, research goals, backtest/factor/options/pattern
+Surfaces 58 tools: skills, research goals, backtest/factor/options/pattern
 analysis, market data, fundamentals & capital-flow & news & discovery
 (get_fund_flow / get_dragon_tiger / get_northbound_flow / get_margin_trading /
 get_block_trades / get_shareholder_count / get_lockup_expiry / get_sector_info /
 get_research_reports / get_stock_news / get_sec_filings /
 get_financial_statements / get_options_chain / get_stock_profile /
-screen_market / search_symbol / get_macro_series / iwencai_search), read-only
+screen_market / search_symbol / get_macro_series / iwencai_search /
+get_china_macro / get_fund_nav / get_fund_position / get_futures_daily), read-only
 trading-connector reads, swarm orchestration, trade-journal and shadow-account
 analysis. Every exposed tool is read-only or research-only; no order-placing or
 order-cancelling tool is ever surfaced via MCP.
@@ -1083,6 +1084,107 @@ def get_market_data(
         interval=interval,
         max_rows=max_rows,
         loader_resolver=_get_loader,
+    )
+
+
+@mcp.tool
+def get_china_macro(indicator: str = "cpi", max_rows: int = 120) -> str:
+    """读取中国宏观指标历史序列。
+
+    数据来自国家统计局并由 AKShare 转接，支持 CPI、PPI、GDP 和 PMI。
+    本工具只读、无需密钥且不消耗积分；历史数据不代表未来，仅供研究，
+    不构成投资建议。
+
+    Args:
+        indicator: 指标名称，可选 ``cpi``、``ppi``、``gdp`` 或 ``pmi``。
+        max_rows: 最多返回的最近记录数，实际范围会夹取到 1 至 500。
+    """
+    registry = _get_registry()
+    return registry.execute(
+        "get_china_macro",
+        {"indicator": indicator, "max_rows": max_rows},
+    )
+
+
+@mcp.tool
+def get_fund_nav(
+    symbol: str,
+    indicator: str = "单位净值走势",
+    period: str = "成立来",
+    max_rows: int = 120,
+) -> str:
+    """读取中国公募基金历史净值。
+
+    数据来自东方财富并由 AKShare 转接，可查询单位净值、累计净值或累计收益率。
+    本工具只读、无需密钥且不消耗积分；历史数据不代表未来，仅供研究，
+    不构成投资建议。
+
+    Args:
+        symbol: 六位基金代码，不带交易所后缀。
+        indicator: 净值序列类型，默认 ``单位净值走势``。
+        period: 累计收益率的历史区间，默认 ``成立来``。
+        max_rows: 最多返回的最近记录数，实际范围会夹取到 1 至 500。
+    """
+    registry = _get_registry()
+    return registry.execute(
+        "get_fund_nav",
+        {
+            "symbol": symbol,
+            "indicator": indicator,
+            "period": period,
+            "max_rows": max_rows,
+        },
+    )
+
+
+@mcp.tool
+def get_fund_position(
+    symbol: str,
+    view: str = "stock",
+    date: str = "2024",
+    max_rows: int = 120,
+) -> str:
+    """读取中国公募基金披露的历史持仓。
+
+    数据来自东方财富或蛋卷并由 AKShare 转接，支持个股、行业和大类资产三种
+    真实粒度；个股持仓上游端点不可用时会显式返回错误，不会用其他粒度冒充。
+    本工具只读、无需密钥且不消耗积分；历史披露不代表未来，仅供研究，
+    不构成投资建议。
+
+    Args:
+        symbol: 六位基金代码，不带交易所后缀。
+        view: 持仓粒度，可选 ``stock``、``industry`` 或 ``asset``。
+        date: 四位报告年份；``asset`` 视角忽略此参数。
+        max_rows: 最多返回的记录数，实际范围会夹取到 1 至 500。
+    """
+    registry = _get_registry()
+    return registry.execute(
+        "get_fund_position",
+        {
+            "symbol": symbol,
+            "view": view,
+            "date": date,
+            "max_rows": max_rows,
+        },
+    )
+
+
+@mcp.tool
+def get_futures_daily(symbol: str, max_rows: int = 120) -> str:
+    """读取中国境内期货合约历史日线。
+
+    数据来自新浪财经并由 AKShare 转接，覆盖上期所、大商所、郑商所和上期能源。
+    本工具只读、无需密钥且不消耗积分；历史行情不代表未来，仅供研究，
+    不构成投资建议。
+
+    Args:
+        symbol: 新浪财经使用的期货合约代码，例如 ``RB2510``。
+        max_rows: 最多返回的最近日线数，实际范围会夹取到 1 至 500。
+    """
+    registry = _get_registry()
+    return registry.execute(
+        "get_futures_daily",
+        {"symbol": symbol, "max_rows": max_rows},
     )
 
 
