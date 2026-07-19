@@ -136,3 +136,13 @@ def test_channel_optional_extras_cover_all_sdk_backed_adapters() -> None:
         "wecom-aibot-sdk",
     }
     assert expected_packages.issubset(channel_extra)
+
+
+def test_release_dependencies_keep_macos_intel_wheel_support() -> None:
+    """发布依赖必须锁在仍提供 macOS Intel wheel 的版本系列。"""
+    pyproject = tomllib.loads((ROOT / "pyproject.toml").read_text())
+    core_dependencies = pyproject["project"]["dependencies"]
+
+    assert "cryptography>=42.0.0,<49" in core_dependencies
+    assert "numba>=0.62.1,<0.63" in core_dependencies
+    assert "numpy>=1.24.0,<2.4" in core_dependencies

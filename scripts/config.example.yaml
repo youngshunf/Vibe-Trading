@@ -15,7 +15,25 @@ targets: aarch64 x86_64
 # 引擎版本（多架构必须同版本）。留空则读仓根 pyproject.toml 的 version。
 version: ""
 
-# 云端 API 基址（给了即开启发布）。生产：https://api.huanxing.dcfuture.cn；本地 dev：http://127.0.0.1:8020
+# 单调发布序列与清单有效期。跨 OS 构建同一版本时这三项必须完全一致。
+release_sequence: 2026071901
+issued_at: "2026-07-19T00:00:00Z"
+expires_at: "2026-08-19T00:00:00Z"
+channel: stable
+
+# Package Adapter 的最低兼容 daemon 版本。
+minimum_daemon_version: "0.1.0"
+
+# Ed25519 签名材料。私钥文件不进仓、不写日志；key_id 必须对应 daemon 受信公钥。
+key_id: finance-release-2026
+signing_key: /secure/path/finance-release-key.pem
+
+# 可选：JSON 数组，记录已撤销 Revision 的 version/platform/sha256/revoked_at/reason/critical。
+revocations_file: ""
+
+# 云端 API 基址（给了即上传包并取得稳定 URL）。现端点仍写迁移期旧配置；
+# FIN-F1-2 受信激活入口落地前，上传成功不代表 v2 清单已生产激活。
+# 生产：https://api.huanxing.dcfuture.cn；本地 dev：http://127.0.0.1:8020
 publish_url: https://api.huanxing.dcfuture.cn
 
 # 云端 finance 应用目录行 ID（hasn_app_catalog 里 app_id='finance' 那行主键；生产/本地可能不同）
@@ -28,4 +46,4 @@ admin_token: ""
 # 以下可选（一般用默认即可）：
 # src: /abs/path/to/vibe-trading/agent   # 含 mcp_server.py，默认=引擎仓 agent/
 # out: /abs/path/to/out                  # 默认=<引擎仓根>/.engine-build/vibe-trading
-# base_url: https://cdn.example/vibe-trading  # 仅手工上传场景；--publish 时云端公共桶自动分配 URL
+# base_url: https://cdn.example/vibe-trading  # 仅手工上传场景；一键发布时使用服务端返回的稳定 URL
