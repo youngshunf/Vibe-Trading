@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+from backtest.finance_report import REPORT_FILE_NAME
 from backtest.loaders.registry import VALID_SOURCES
 from src.agent.progress import emit_progress
 from src.agent.tools import BaseTool
@@ -63,14 +64,30 @@ def run_backtest(run_dir: str) -> str:
     )
 
     emit_progress("finalize", message="collecting artifacts")
-    artifacts_found = {name: str(path) for name, path in result.artifacts.items()}
+    if not result.success:
+        return json.dumps({
+            "status": "error",
+            "exit_code": result.exit_code,
+            "stdout": result.stdout[-2000:] if len(result.stdout) > 2000 else result.stdout,
+            "stderr": result.stderr[-2000:] if len(result.stderr) > 2000 else result.stderr,
+        }, ensure_ascii=False)
+
+    report_path = run_path / REPORT_FILE_NAME
+    if not report_path.is_file():
+        return json.dumps({
+            "status": "error",
+            "error": f"回测已执行但缺少稳定产物 {REPORT_FILE_NAME}",
+        }, ensure_ascii=False)
+    try:
+        report = json.loads(report_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        return json.dumps({
+            "status": "error",
+            "error": f"回测稳定产物无法读取：{exc}",
+        }, ensure_ascii=False)
     return json.dumps({
-        "status": "ok" if result.success else "error",
-        "exit_code": result.exit_code,
-        "stdout": result.stdout[-2000:] if len(result.stdout) > 2000 else result.stdout,
-        "stderr": result.stderr[-2000:] if len(result.stderr) > 2000 else result.stderr,
-        "artifacts": artifacts_found,
-        "run_dir": run_dir,
+        "status": "ok",
+        "report": report,
     }, ensure_ascii=False)
 
 

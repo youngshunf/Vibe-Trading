@@ -390,6 +390,38 @@ class BaseEngine(ABC):
         self._bar_idx: int = 0
         self._active_symbol: str = ""  # set by _rebalance/_close_position for subclass use
 
+    def finance_cost_model(self) -> Dict[str, Any]:
+        """返回本次引擎实例实际生效的成本参数快照。"""
+        markers = (
+            "commission",
+            "fee",
+            "tax",
+            "slippage",
+            "spread",
+            "funding",
+            "leverage",
+            "margin",
+            "multiplier",
+        )
+        parameters: Dict[str, Any] = {}
+        for name, value in sorted(vars(self).items()):
+            public_name = name.lstrip("_")
+            if name.startswith("_") and not name.startswith("_commission"):
+                continue
+            if not any(marker in public_name for marker in markers):
+                continue
+            if value is None or not isinstance(value, (str, int, float, bool)):
+                continue
+            parameters[public_name] = value
+        if not parameters:
+            raise ValueError(
+                f"{type(self).__name__} 未暴露可核验的实际成本模型参数"
+            )
+        return {
+            "market_engine": type(self).__name__,
+            "parameters": parameters,
+        }
+
     # ── Market rule interface (subclass must implement) ──
 
     @abstractmethod
@@ -774,6 +806,19 @@ class BaseEngine(ABC):
             strategy_path=run_dir / "code" / "signal_engine.py",
             warnings=config.get("content_filter_warnings") or None,
         )
+        if config.get("_finance_report_required") is True:
+            from backtest.finance_report import write_finance_backtest_report
+            from cli._version import __version__
+
+            write_finance_backtest_report(
+                run_dir,
+                config,
+                m,
+                data_sources=_run_card_data_sources(config, loader),
+                cost_model=self.finance_cost_model(),
+                benchmark_symbol=str(m.get("benchmark_ticker") or "UNIVERSE_EW"),
+                engine_version=__version__,
+            )
 
         # Print scalar metrics (skip nested dicts for JSON compat).
         # Explosive annual_return may be +inf; match options/run_card and emit
