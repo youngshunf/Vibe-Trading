@@ -1,0 +1,60 @@
+{
+  "environment": {
+    "git_revision": "07c34d2419efee1e04a15dcf2be9cb7ac3bb5ab9",
+    "platform": "macOS-26.5.1-arm64-arm-64bit",
+    "python": "3.11.13"
+  },
+  "latency_seconds": {
+    "cold_start": 4.047641,
+    "maximum": 4.047641,
+    "median": 2.088391,
+    "minimum": 2.006488,
+    "p95": 3.791013,
+    "p99": 4.047641,
+    "samples": [
+      4.047641,
+      2.111196,
+      2.084253,
+      2.202626,
+      2.145808,
+      2.08311,
+      2.078394,
+      2.08903,
+      2.085699,
+      2.134907,
+      2.075262,
+      2.176472,
+      3.463668,
+      3.791013,
+      2.084905,
+      2.006488,
+      2.049438,
+      2.088391,
+      2.011953,
+      2.365637
+    ],
+    "warm_p95": 3.791013,
+    "warm_p99": 3.791013
+  },
+  "method": "sequential_real_backtest_nearest_rank",
+  "result_contract": {
+    "benchmark_symbol": "UNIVERSE_EW",
+    "data_source": "tushare",
+    "engine_version": "0.1.11",
+    "schema_version": "finance_backtest_report_v1",
+    "strategy_code_sha256": "4d65e70a5a975f81497d827d96223c69a189963189845c3866f4a3b6d7c35331"
+  },
+  "sample_count": 20,
+  "schema_version": "finance_backtest_latency_benchmark_v1",
+  "started_at": "2026-07-20T04:08:25.228705+00:00",
+  "workload": {
+    "codes": [
+      "600519.SH"
+    ],
+    "end_date": "2025-06-30",
+    "engine": "daily",
+    "interval": "1D",
+    "source": "auto",
+    "start_date": "2025-01-02"
+  }
+}

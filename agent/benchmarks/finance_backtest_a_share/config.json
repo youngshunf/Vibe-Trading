@@ -1,0 +1,12 @@
+{
+  "title": "A股双均线延迟基准",
+  "codes": [
+    "600519.SH"
+  ],
+  "start_date": "2025-01-02",
+  "end_date": "2025-06-30",
+  "source": "auto",
+  "interval": "1D",
+  "engine": "daily",
+  "initial_cash": 1000000
+}
