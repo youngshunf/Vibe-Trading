@@ -899,6 +899,7 @@ def main(run_dir: Path) -> None:
     loader = fetch_result.loader
     config["codes"] = codes
     config["_run_card_effective_sources"] = fetch_result.effective_sources
+    config["_finance_report_required"] = True
     interval = config.get("interval", "1D")
     if not data_map:
         print(json.dumps({"error": "No data fetched"}))
