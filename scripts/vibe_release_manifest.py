@@ -11,6 +11,7 @@ import shutil
 import stat
 import sys
 import tempfile
+import unicodedata
 import zipfile
 
 from collections.abc import Mapping
@@ -63,6 +64,10 @@ class ManifestError(ValueError):
     """发布清单或归档违反安全契约。"""
 
 
+# 单个路径成分的最大字节数（与 daemon hasn-local-runtime-artifact::archive 口径一致）。
+_MAX_PATH_COMPONENT_BYTES = 128
+
+
 def _sha256_bytes(payload: bytes) -> str:
     return hashlib.sha256(payload).hexdigest()
 
@@ -99,6 +104,12 @@ def _require_exact_fields(value: Mapping[str, Any], expected: set[str], context:
 
 
 def _safe_relative_path(raw: str) -> str:
+    """与 daemon hasn-local-runtime-artifact::archive 的口径逐条对齐。
+
+    目标「打得出 = 装得上」：打包期就拒绝 daemon 会拒的路径（fail fast），
+    而不是发布出去后被整包 unsafe_archive 拒装。daemon 口径：成分 ≤128 字节、
+    无 C0/C1 控制字符（Unicode category Cc）、无路径分隔符与冒号、非 . / ..。
+    """
     if not raw or "\\" in raw:
         raise ManifestError(f"不安全相对路径：{raw!r}")
     path = PurePosixPath(raw)
@@ -107,6 +118,12 @@ def _safe_relative_path(raw: str) -> str:
     normalized = path.as_posix()
     if normalized != raw:
         raise ManifestError(f"非规范相对路径：{raw!r}")
+    for part in path.parts:
+        if len(part.encode("utf-8")) > _MAX_PATH_COMPONENT_BYTES:
+            raise ManifestError(f"路径成分超过 {_MAX_PATH_COMPONENT_BYTES} 字节：{part!r}")
+        for ch in part:
+            if unicodedata.category(ch) == "Cc" or ch == ":":
+                raise ManifestError(f"路径成分含控制字符或冒号：{part!r}")
     return normalized
 
 
