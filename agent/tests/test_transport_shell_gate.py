@@ -5,19 +5,15 @@
 ``background_run`` 被暴露给它，等于让 LLM 在主人电脑上执行任意命令——而本模块
 没有 computer-use 那套审批 + 黑名单 + 归因闸。
 
-上游 ``mcp_server.py:1920`` 的判定：
+旧上游曾按传输类型决定是否开放 shell：
 
     _include_shell_tools = True if args.transport == "stdio" else _env_shell_tools_enabled()
 
-读法：**stdio 无条件开 shell，env 闸对它完全无效**；只有 sse/http 才读 env。
-唤星据此选定「选项 A」= ``--transport http`` + ``VIBE_TRADING_ENABLE_SHELL_TOOLS``
-不开启，好处是**零改上游代码**就能真正关掉 shell（选项 B 要在 fork 里打安全补丁，
-每次同步上游都得重打，漏一次就静默开后门）。
-
-模块级默认 ``_include_shell_tools = True``（``mcp_server.py:84``）是 **fail-open**：
-只有走完 ``main()`` 才会被收紧。整条安全结论就挂在这根细线上，所以这里**真调
-main()**、真走判定，而不是读代码断言。唯一被替换的是最后那句阻塞的
-``mcp.run()``——拦住它是为了让测试能返回，判定逻辑本身一行没绕过。
+上游现已通过 GHSA-6wjh 修复该问题：stdio、sse 和 http 都默认关闭 shell，只有
+``--enable-shell-tools`` 或 ``VIBE_TRADING_ENABLE_SHELL_TOOLS=1`` 才显式开启；模块级
+默认也改为 fail-closed。这里继续**真调 main()**、真走判定，而不是读代码断言。
+唯一被替换的是最后阻塞服务进程的 ``mcp.run()`` / ``uvicorn.run()``，判定逻辑
+本身一行没绕过，也不会让单元测试真的占用 8900 端口。
 """
 
 from __future__ import annotations
@@ -26,14 +22,15 @@ import pytest
 
 pytestmark = pytest.mark.unit
 
-# 关闸后必须消失的工具（P0-闸2 实测差集，见 03 设计文档 §2.3）
-SHELL_TOOLS = ("bash", "background_run")
+# 关闸后必须消失的进程控制工具。
+SHELL_TOOLS = ("bash", "background_run", "cancel_background")
 
 
 @pytest.fixture
 def run_main(monkeypatch: pytest.MonkeyPatch):
     """调 mcp_server.main()，拦住阻塞的 run()，返回判定出的 shell 闸状态。"""
     import mcp_server
+    import uvicorn
     from src.config.accessor import reset_env_config
 
     def _run(*argv: str, shell_env: str | None = None) -> bool:
@@ -45,6 +42,7 @@ def run_main(monkeypatch: pytest.MonkeyPatch):
 
         monkeypatch.setattr("sys.argv", ["mcp_server.py", *argv])
         monkeypatch.setattr(mcp_server.mcp, "run", lambda **kwargs: None)
+        monkeypatch.setattr(uvicorn, "run", lambda *args, **kwargs: None)
         # pre-warm 会真建 79 工具的注册表；判定与它无关，跳过省几秒
         monkeypatch.setattr(mcp_server, "_get_registry", lambda: None)
 
@@ -54,13 +52,13 @@ def run_main(monkeypatch: pytest.MonkeyPatch):
     yield _run
 
     # main() 写的是模块级 global，复原以免污染同进程内的后续测试
-    mcp_server._include_shell_tools = True
+    mcp_server._include_shell_tools = False
     mcp_server._registry = None
     reset_env_config()
 
 
-class TestOptionA:
-    """选项 A：http 传输 + env 不开 → shell 真的关掉（零改上游）。"""
+class TestNetworkTransportsFailClosed:
+    """网络传输默认关闸，只有显式环境变量才能开启。"""
 
     def test_http_without_env_disables_shell_tools(self, run_main) -> None:
         assert run_main("--transport", "http") is False
@@ -80,20 +78,15 @@ class TestOptionA:
         assert run_main("--transport", "sse") is False
 
 
-class TestStdioIsFailOpen:
-    """记录并钉死「为什么不能用 stdio」——env 闸对它无效。
+class TestStdioIsFailClosed:
+    """stdio 与默认传输同样必须显式授权 shell，不能因本地管道自动放行。"""
 
-    这不是缺陷，是上游的信任假设（stdio = 本地开发者自己跑）。但唤星的托管场景
-    里，进程另一端是 LLM 而不是开发者，所以这个假设不成立 → 必须走 http。
-    哪天这条变红（stdio 开始认 env 了），说明上游改了模型，可重新评估 stdio 范式。
-    """
+    def test_stdio_env_off_disables_shell(self, run_main) -> None:
+        assert run_main("--transport", "stdio", shell_env="0") is False
 
-    def test_stdio_ignores_env_and_enables_shell(self, run_main) -> None:
-        assert run_main("--transport", "stdio", shell_env="0") is True
-
-    def test_default_transport_is_stdio_hence_unsafe_for_us(self, run_main) -> None:
-        """不带 --transport 就是 stdio → 唤星的 daemon 必须显式传 http。"""
-        assert run_main(shell_env="0") is True
+    def test_default_transport_is_also_safe(self, run_main) -> None:
+        """不带 ``--transport`` 时也不能绕过 shell 闸。"""
+        assert run_main(shell_env="0") is False
 
 
 class TestRegistryHonoursTheGate:
